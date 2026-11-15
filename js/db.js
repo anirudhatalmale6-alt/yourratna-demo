@@ -5,8 +5,8 @@
  */
 import * as seed from './data.js';
 
-const KEY = 'sitara_demo_v1';
-const COLLECTIONS = ['settings', 'categories', 'products', 'banners', 'posts', 'coupons', 'customers', 'orders', 'reviews', 'faq'];
+const KEY = 'yourratna_demo_v2';
+const COLLECTIONS = ['settings', 'categories', 'products', 'banners', 'posts', 'coupons', 'customers', 'orders', 'reviews', 'faq', 'enquiries'];
 
 function fresh() {
   return {
@@ -20,6 +20,7 @@ function fresh() {
     orders: structuredClone(seed.ORDERS),
     reviews: structuredClone(seed.REVIEWS),
     faq: structuredClone(seed.FAQ),
+    enquiries: structuredClone(seed.ENQUIRIES),
     cart: [], wishlist: [], session: null, coupon: '', newsletter: [], messages: [],
   };
 }
@@ -63,15 +64,22 @@ export const slugify = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').
 
 export const product = id => state.products.find(p => p.id === id);
 export const productBySlug = s => state.products.find(p => p.slug === s);
-export const live = () => state.products.filter(p => p.status === 'active');
+export const live = () => state.products.filter(p => p.status === 'active' && p.type !== 'service');
+
+/** Price of a cart line: the chosen weight option, or the product price. */
+export function unitPrice(p, variant = -1) {
+  return variant >= 0 && p.variants && p.variants[variant] ? p.variants[variant].price : p.price;
+}
+export const variantLabel = (p, variant = -1) => (variant >= 0 && p.variants && p.variants[variant] ? p.variants[variant].label : '');
 
 // ------------------------------------------------------------------- cart --
-export function cartAdd(id, qty = 1, size = '') {
+export function cartAdd(id, qty = 1, variant = -1, note = '') {
   const p = product(id);
   if (!p || p.stock <= 0) return false;
-  const line = state.cart.find(l => l.id === id && l.size === size);
+  // services (consultation, kundali) are one line per booking
+  const line = p.type !== 'service' && state.cart.find(l => l.id === id && (l.variant ?? -1) === variant);
   if (line) line.qty = Math.min(line.qty + qty, p.stock);
-  else state.cart.push({ id, qty: Math.min(qty, p.stock), size });
+  else state.cart.push({ id, qty: Math.min(qty, p.stock), variant, note });
   save();
   return true;
 }
@@ -94,15 +102,16 @@ export function findCoupon(code) {
 /** Prices include GST (as is normal for jewellery in India); GST is shown as part of the total. */
 export function totals(lines = state.cart, couponCode = state.coupon, payment = '') {
   const s = state.settings;
-  const items = lines.map(l => ({ ...l, p: product(l.id) })).filter(l => l.p);
-  const subtotal = items.reduce((t, l) => t + l.p.price * l.qty, 0);
+  const items = lines.map(l => { const p = product(l.id); return p && { ...l, p, unit: unitPrice(p, l.variant ?? -1), label: variantLabel(p, l.variant ?? -1) }; }).filter(Boolean);
+  const subtotal = items.reduce((t, l) => t + l.unit * l.qty, 0);
+  const goods = items.some(l => l.p.type !== 'service');
   const c = findCoupon(couponCode);
   let discount = 0, couponNote = '';
   if (couponCode && !c) couponNote = 'This coupon is not valid.';
   else if (c && subtotal < c.min) couponNote = `Add ${money(c.min - subtotal)} more to use ${c.code}.`;
   else if (c) discount = c.type === 'percent' ? Math.round(subtotal * c.value / 100) : Math.min(c.value, subtotal);
   const after = subtotal - discount;
-  const shipping = !items.length || after >= s.freeShippingOver ? 0 : Number(s.shipping);
+  const shipping = !goods || after >= s.freeShippingOver ? 0 : Number(s.shipping);
   const codFee = payment === 'Cash on delivery' ? Number(s.codFee || 0) : 0;
   const total = after + shipping + codFee;
   const gst = Math.round(after * s.gst / (100 + Number(s.gst)));
@@ -122,13 +131,18 @@ export function placeOrder(form, payment) {
   cust.address = { line: form.line, city: form.city, state: form.state, pin: form.pin };
   cust.phone = form.phone || cust.phone;
   const order = {
-    id: 'SG' + (50120 + state.orders.length + Math.floor(Math.random() * 900)), customerId: cust.id,
+    id: 'YR' + (60120 + state.orders.length + Math.floor(Math.random() * 900)), customerId: cust.id,
     name: form.name, email: form.email.toLowerCase(), phone: form.phone, address: cust.address,
-    items: t.items.map(l => ({ id: l.id, title: l.p.title, price: l.p.price, qty: l.qty, size: l.size })),
+    items: t.items.map(l => ({ id: l.id, title: l.p.title, price: l.unit, qty: l.qty, variant: l.label, note: l.note || '' })),
     subtotal: t.subtotal, discount: t.discount, coupon: t.coupon, shipping: t.shipping, codFee: t.codFee, gst: t.gst, total: t.total,
     payment, status: 'Pending', tracking: '', created: Date.now(),
   };
-  for (const l of t.items) l.p.stock -= l.qty;
+  for (const l of t.items) if (l.p.type !== 'service') l.p.stock -= l.qty;
+  // a paid consultation / kundali becomes an enquiry the team can work on
+  for (const l of t.items.filter(x => x.p.type === 'service')) {
+    const e = state.enquiries.find(x => x.id === l.note);
+    if (e) { e.status = 'Paid'; e.orderId = order.id; }
+  }
   state.orders.unshift(order);
   state.cart = [];
   state.coupon = '';

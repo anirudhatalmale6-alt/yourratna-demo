@@ -1,26 +1,41 @@
-/* Admin panel for the demo store. Changes write to the shared demo db, so
+/* Admin panel for the YourRatna demo. Changes write to the shared demo db, so
  * the shop (open in another tab) updates straight away. */
-import { art, productImage, GEMS, METALS } from './art.js';
+import { art, productImage, serviceArt, GEMS, MALAS } from './art.js';
+import { RUDRAKSHA, gemVariants } from './data.js';
 import { db, save, reset, esc, money, date, datetime, slugify, uid, readImage, onExternalChange } from './db.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const root = $('#root');
 const STATUSES = ['Pending', 'Confirmed', 'Shipped', 'Delivered', 'Cancelled'];
-const THEMES = { navy: 'Midnight', wine: 'Wine', forest: 'Forest' };
-const TYPES = { ring: 'Ring', pendant: 'Pendant', earrings: 'Earrings', necklace: 'Necklace', loose: 'Loose stone' };
+const ENQ_STATUSES = ['New', 'Awaiting payment', 'Paid', 'In progress', 'Done'];
+const THEMES = { teal: 'Temple teal', kumkum: 'Kumkum red', dusk: 'Dusk violet' };
+const PTYPES = { gem: 'Gemstone', rudraksha: 'Rudraksha', mala: 'Mala' };
+const MUKHI = Object.fromEntries(Object.keys(RUDRAKSHA).map(m => [m, m === 'ganesha' ? 'Ganesha' : m === 'gauri-shankar' ? 'Gauri Shankar' : m + ' Mukhi']));
+const ORIGINS = ['Ceylon', 'Burma', 'Bangkok', 'Kashmir-type', 'Colombia', 'Zambia', 'Brazil', 'Mozambique', 'Thailand', 'Italy', 'Japan', 'South Sea', 'Basra', 'Africa', 'Russia', 'Australia', 'Ethiopia', 'Iran', 'Afghanistan', 'Nepal', 'Indonesia', 'India'];
 
 function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2400); }
 const go = h => { location.hash = h; };
 const pill = s => `<span class="pill ${String(s).toLowerCase().replace(/\s+/g, '-')}">${esc(s)}</span>`;
-const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${esc(k)}" ${k === sel ? 'selected' : ''}>${esc(typeof v === 'string' ? v : v.name)}</option>`).join('');
+const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${esc(k)}" ${k === String(sel) ? 'selected' : ''}>${esc(typeof v === 'string' ? v : v.name + (v.hindi ? ` (${v.hindi})` : ''))}</option>`).join('');
 const live30 = o => o.status !== 'Cancelled' && o.created > Date.now() - 30 * 864e5;
+const goods = () => db.products.filter(p => p.type !== 'service');
+
+/** Picture picker used by categories, banners and articles: type + item. */
+const PIC_KEYS = { gem: GEMS, rudraksha: MUKHI, mala: MALAS };
+function picPicker(type, key) {
+  return `<div class="g2 pic"><label>Picture<select name="ptype">${opts(PTYPES, type)}</select></label>
+    <label>Showing<select name="pkey">${opts(PIC_KEYS[type] || GEMS, key)}</select></label></div>`;
+}
+function bindPicPicker(form) {
+  form.ptype.onchange = () => { form.pkey.innerHTML = opts(PIC_KEYS[form.ptype.value], ''); };
+}
 
 // ------------------------------------------------------------------ auth ----
-const authed = () => sessionStorage.getItem('sg_admin') === '1';
+const authed = () => sessionStorage.getItem('yr_admin') === '1';
 function login() {
   root.innerHTML = `<div class="login"><form id="lf" class="card login-card">
-    <div class="brand"><span>◆</span>${esc(db.settings.name)}</div><h1>Admin sign in</h1>
+    <div class="brand"><span class="logo-mark"></span>${esc(db.settings.name)}</div><h1>Admin sign in</h1>
     <label>Username<input name="u" value="admin" autocomplete="username"></label>
     <label>Password<input name="p" type="password" value="admin123" autocomplete="current-password"></label>
     <p class="err" id="le" hidden>Wrong username or password.</p>
@@ -29,33 +44,33 @@ function login() {
     <a href="../" class="hint">← Back to the shop</a></form></div>`;
   $('#lf').onsubmit = e => {
     e.preventDefault();
-    if (e.target.u.value.trim() === 'admin' && e.target.p.value === 'admin123') { sessionStorage.setItem('sg_admin', '1'); route(); }
+    if (e.target.u.value.trim() === 'admin' && e.target.p.value === 'admin123') { sessionStorage.setItem('yr_admin', '1'); route(); }
     else $('#le').hidden = false;
   };
 }
 
 // ----------------------------------------------------------------- shell ----
 const NAV = [
-  ['dash', 'Dashboard', '▦'], ['orders', 'Orders', '◷'], ['products', 'Products', '◆'], ['categories', 'Categories', '▤'],
+  ['dash', 'Dashboard', '▦'], ['orders', 'Orders', '◷'], ['enquiries', 'Enquiries & bookings', '☎'], ['products', 'Products', '◆'], ['categories', 'Categories', '▤'],
   ['customers', 'Customers', '☺'], ['coupons', 'Coupons', '%'], ['banners', 'Homepage banners', '▭'], ['reviews', 'Reviews', '★'],
   ['blog', 'Gem Guide (blog)', '✎'], ['inbox', 'Messages & subscribers', '✉'], ['settings', 'Store settings', '⚙'],
 ];
 function shell(active, title, body, actions = '') {
-  const pending = db.orders.filter(o => o.status === 'Pending').length;
-  const rev = db.reviews.filter(r => !r.approved).length;
+  const badge = { orders: db.orders.filter(o => o.status === 'Pending').length, reviews: db.reviews.filter(r => !r.approved).length,
+    enquiries: db.enquiries.filter(e => ['New', 'Paid'].includes(e.status)).length };
   root.innerHTML = `<div class="shell">
-    <aside class="side" id="side"><a href="#/dash" class="brand"><span>◆</span>${esc(db.settings.name)}</a>
-      <nav>${NAV.map(([k, l, i]) => `<a href="#/${k}" class="${k === active ? 'on' : ''}"><i>${i}</i>${l}${k === 'orders' && pending ? `<b>${pending}</b>` : ''}${k === 'reviews' && rev ? `<b>${rev}</b>` : ''}</a>`).join('')}</nav>
+    <aside class="side" id="side"><a href="#/dash" class="brand"><span class="logo-mark"></span>${esc(db.settings.name)}</a>
+      <nav>${NAV.map(([k, l, i]) => `<a href="#/${k}" class="${k === active ? 'on' : ''}"><i>${i}</i>${l}${badge[k] ? `<b>${badge[k]}</b>` : ''}</a>`).join('')}</nav>
       <div class="side-ft"><a href="../" target="_blank">View store ↗</a><button class="link" id="out">Sign out</button></div></aside>
     <div class="main"><header class="top"><button class="menu-btn" id="mb" aria-label="Menu">☰</button><h1>${title}</h1><div class="top-act">${actions}</div></header>
       <div class="content">${body}</div></div></div>`;
-  $('#out').onclick = () => { sessionStorage.removeItem('sg_admin'); route(); };
+  $('#out').onclick = () => { sessionStorage.removeItem('yr_admin'); route(); };
   $('#mb').onclick = () => $('#side').classList.toggle('open');
 }
 
 // ------------------------------------------------------------- dashboard ----
 function dash() {
-  const O = db.orders, P = db.products;
+  const O = db.orders, P = goods();
   const recent = O.filter(live30);
   const rev = recent.reduce((s, o) => s + o.total, 0);
   const prev = O.filter(o => o.status !== 'Cancelled' && o.created <= Date.now() - 30 * 864e5 && o.created > Date.now() - 60 * 864e5).reduce((s, o) => s + o.total, 0);
@@ -67,30 +82,33 @@ function dash() {
   const max = Math.max(...days.map(x => x.v), 1);
   const bars = days.map((x, i) => {
     const h = Math.round((x.v / max) * 150);
-    return `<g><rect x="${i * 20 + 4}" y="${170 - h}" width="13" height="${h || 1}" rx="3" fill="${x.v ? '#b98d34' : '#e9e2d6'}"><title>${x.d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}: ${money(x.v)}</title></rect></g>`;
+    return `<rect x="${i * 20 + 4}" y="${170 - h}" width="13" height="${h || 1}" rx="3" fill="${x.v ? '#e38b1d' : '#e6ddcc'}"><title>${x.d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}: ${money(x.v)}</title></rect>`;
   }).join('');
-  const byStatus = STATUSES.map(s => [s, O.filter(o => o.status === s).length]);
   const sold = {};
   O.filter(o => o.status !== 'Cancelled').forEach(o => o.items.forEach(i => { sold[i.id] = (sold[i.id] || 0) + i.qty; }));
-  const top = Object.entries(sold).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([id, n]) => [P.find(p => p.id === id), n]).filter(x => x[0]);
+  const top = Object.entries(sold).sort((a, b) => b[1] - a[1]).map(([id, n]) => [P.find(p => p.id === id), n]).filter(x => x[0]).slice(0, 5);
   const low = P.filter(p => p.status === 'active' && p.stock <= 2).sort((a, b) => a.stock - b.stock).slice(0, 6);
+  const enq = db.enquiries.filter(e => e.status !== 'Done').slice(0, 5);
   shell('dash', 'Dashboard', `
   <div class="kpis">
     <div class="kpi"><span>Revenue · last 30 days</span><b>${money(rev)}</b><small class="${rev >= prev ? 'up' : 'down'}">${prev ? (rev >= prev ? '▲ ' : '▼ ') + Math.abs(Math.round((rev - prev) / prev * 100)) + '% vs previous 30 days' : 'first month'}</small></div>
     <div class="kpi"><span>Orders · last 30 days</span><b>${recent.length}</b><small>${O.filter(o => o.status === 'Pending').length} waiting to be confirmed</small></div>
-    <div class="kpi"><span>Average order</span><b>${money(recent.length ? rev / recent.length : 0)}</b><small>excluding cancelled</small></div>
+    <div class="kpi"><span>Open enquiries</span><b>${db.enquiries.filter(e => e.status !== 'Done').length}</b><small>consultations, kundali &amp; leads</small></div>
     <div class="kpi"><span>Customers</span><b>${db.customers.length}</b><small>${db.newsletter.length} newsletter subscribers</small></div>
   </div>
   <div class="cols">
-    <section class="card"><h2>Sales — last 30 days</h2><svg viewBox="0 0 600 180" class="chart" preserveAspectRatio="none">${bars}<line x1="0" y1="170.5" x2="600" y2="170.5" stroke="#e9e2d6"/></svg>
+    <section class="card"><h2>Sales — last 30 days</h2><svg viewBox="0 0 600 180" class="chart" preserveAspectRatio="none">${bars}<line x1="0" y1="170.5" x2="600" y2="170.5" stroke="#e6ddcc"/></svg>
       <div class="chart-x"><span>${days[0].d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span><span>Today</span></div></section>
-    <section class="card"><h2>Orders by status</h2>${byStatus.map(([s, n]) => `<a href="#/orders?status=${s}" class="stat-row">${pill(s)}<b>${n}</b></a>`).join('')}</section>
+    <section class="card"><div class="card-hd"><h2>Enquiries to handle</h2><a href="#/enquiries">All →</a></div>
+      ${enq.map(e => `<a href="#/enquiries/${e.id}" class="stat-row"><span><b>${esc(e.name)}</b><small class="block">${esc(e.type)} · ${datetime(e.created)}</small></span>${pill(e.status)}</a>`).join('') || '<p class="muted">Nothing waiting.</p>'}</section>
   </div>
   <div class="cols">
-    <section class="card"><div class="card-hd"><h2>Latest orders</h2><a href="#/orders">All orders →</a></div>${orderTable(O.slice(0, 6))}</section>
+    <section class="card"><div class="card-hd"><h2>Latest orders</h2><a href="#/orders">All orders →</a></div>${orderTable(O.slice(0, 6))}
+      <h2 style="margin-top:18px">Orders by status</h2><div class="status-strip">${STATUSES.map(s => `<a href="#/orders?status=${s}">${pill(s)} <b>${O.filter(o => o.status === s).length}</b></a>`).join('')}</div></section>
     <section class="card"><h2>Best sellers</h2>${top.map(([p, n]) => `<a href="#/products/${p.id}" class="mini">${productImage(p)}<span>${esc(p.title)}</span><b>${n} sold</b></a>`).join('') || '<p class="muted">No sales yet.</p>'}
       <h2 style="margin-top:18px">Low stock</h2>${low.map(p => `<a href="#/products/${p.id}" class="mini">${productImage(p)}<span>${esc(p.title)}</span><b class="${p.stock ? 'warn' : 'bad'}">${p.stock ? p.stock + ' left' : 'Sold out'}</b></a>`).join('') || '<p class="muted">All products are well stocked.</p>'}</section>
   </div>`);
+  bindRows();
 }
 
 function orderTable(list) {
@@ -100,6 +118,7 @@ function orderTable(list) {
   </tbody></table></div>`;
 }
 function bindRows() { $$('tr.click').forEach(tr => tr.onclick = () => go(tr.dataset.href)); }
+const itemExtra = i => [i.variant, i.note && !String(i.id).startsWith('SV-') ? i.note : ''].filter(Boolean).map(esc).join(' · ');
 
 // ---------------------------------------------------------------- orders ----
 function orders() {
@@ -119,13 +138,15 @@ function orders() {
 function order(id) {
   const o = db.orders.find(x => x.id === id);
   if (!o) return go('#/orders');
+  const bookings = db.enquiries.filter(e => e.orderId === o.id);
   shell('orders', `Order #${esc(o.id)}`, `
   <div class="cols wide">
     <section class="card"><h2>Items</h2>
-      ${o.items.map(i => { const p = db.products.find(x => x.id === i.id); return `<div class="mini">${p ? productImage(p) : ''}<span>${esc(i.title)}${i.size ? ` · size ${esc(i.size)}` : ''}<small>${money(i.price)} × ${i.qty}</small></span><b>${money(i.price * i.qty)}</b></div>`; }).join('')}
+      ${o.items.map(i => { const p = db.products.find(x => x.id === i.id); return `<div class="mini">${p ? productImage(p) : ''}<span>${esc(i.title)}<small>${itemExtra(i)}${itemExtra(i) ? ' · ' : ''}${money(i.price)} × ${i.qty}</small></span><b>${money(i.price * i.qty)}</b></div>`; }).join('')}
       <div class="totals"><div><span>Subtotal</span><b>${money(o.subtotal)}</b></div>${o.discount ? `<div><span>Coupon ${esc(o.coupon)}</span><b>− ${money(o.discount)}</b></div>` : ''}
         <div><span>Shipping</span><b>${o.shipping ? money(o.shipping) : 'Free'}</b></div>${o.codFee ? `<div><span>COD fee</span><b>${money(o.codFee)}</b></div>` : ''}
-        <div class="t"><span>Total</span><b>${money(o.total)}</b></div><div class="muted"><span>Includes GST</span><span>${money(o.gst)}</span></div></div></section>
+        <div class="t"><span>Total</span><b>${money(o.total)}</b></div><div class="muted"><span>Includes GST</span><span>${money(o.gst)}</span></div></div>
+      ${bookings.length ? `<h2 style="margin-top:16px">Linked bookings</h2>${bookings.map(e => `<a class="stat-row" href="#/enquiries/${e.id}"><span>${esc(e.type)} — ${esc(e.name)}</span>${pill(e.status)}</a>`).join('')}` : ''}</section>
     <div>
       <section class="card"><h2>Status</h2><form id="stf">
         <label>Order status<select name="status">${STATUSES.map(s => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
@@ -139,8 +160,9 @@ function order(id) {
     e.preventDefault();
     const was = o.status;
     o.status = e.target.status.value; o.tracking = e.target.tracking.value.trim();
-    if (o.status === 'Cancelled' && was !== 'Cancelled') o.items.forEach(i => { const p = db.products.find(x => x.id === i.id); if (p) p.stock += i.qty; });
-    if (was === 'Cancelled' && o.status !== 'Cancelled') o.items.forEach(i => { const p = db.products.find(x => x.id === i.id); if (p) p.stock = Math.max(0, p.stock - i.qty); });
+    const restock = sign => o.items.forEach(i => { const p = db.products.find(x => x.id === i.id); if (p && p.type !== 'service') p.stock = Math.max(0, p.stock + sign * i.qty); });
+    if (o.status === 'Cancelled' && was !== 'Cancelled') restock(1);
+    if (was === 'Cancelled' && o.status !== 'Cancelled') restock(-1);
     save(); toast('Order updated' + (o.status === 'Cancelled' && was !== 'Cancelled' ? ' — stock returned' : '')); order(id);
   };
 }
@@ -150,31 +172,65 @@ function invoice(id) {
   if (!o) return go('#/orders');
   const taxable = o.total - o.gst - o.shipping - o.codFee;
   root.innerHTML = `<div class="invoice"><div class="no-print bar"><a href="#/orders/${o.id}" class="btn ghost sm">← Back</a><button class="btn sm" onclick="print()">Print / Save PDF</button></div>
-    <div class="inv"><div class="inv-hd"><div><div class="brand"><span>◆</span>${esc(s.name)}</div><p>${esc(s.address)}<br>${esc(s.phone)} · ${esc(s.email)}<br>GSTIN ${esc(s.gstin)}</p></div>
+    <div class="inv"><div class="inv-hd"><div><div class="brand"><span class="logo-mark"></span>${esc(s.name)}</div><p>${esc(s.address)}<br>${esc(s.phone)} · ${esc(s.email)}<br>GSTIN ${esc(s.gstin)}</p></div>
       <div class="r"><h1>Tax invoice</h1><p>Invoice #INV-${esc(o.id)}<br>Date ${date(o.created)}<br>Order #${esc(o.id)}</p></div></div>
       <div class="inv-to"><b>Bill to</b><br>${esc(o.name)}<br>${esc(o.address.line)}, ${esc(o.address.city)}, ${esc(o.address.state)} ${esc(o.address.pin)}<br>${esc(o.phone)}</div>
-      <table class="tbl"><thead><tr><th>Item</th><th>HSN</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead><tbody>
-        ${o.items.map(i => `<tr><td>${esc(i.title)}${i.size ? ` (size ${esc(i.size)})` : ''}</td><td>7113</td><td class="r">${i.qty}</td><td class="r">${money(i.price)}</td><td class="r">${money(i.price * i.qty)}</td></tr>`).join('')}</tbody></table>
+      <table class="tbl"><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead><tbody>
+        ${o.items.map(i => `<tr><td>${esc(i.title)}${i.variant ? `<small>${esc(i.variant)}</small>` : ''}</td><td class="r">${i.qty}</td><td class="r">${money(i.price)}</td><td class="r">${money(i.price * i.qty)}</td></tr>`).join('')}</tbody></table>
       <div class="totals inv-tot">${o.discount ? `<div><span>Discount (${esc(o.coupon)})</span><b>− ${money(o.discount)}</b></div>` : ''}
         <div><span>Taxable value</span><b>${money(taxable)}</b></div><div><span>CGST ${s.gst / 2}%</span><b>${money(o.gst / 2)}</b></div><div><span>SGST ${s.gst / 2}%</span><b>${money(o.gst / 2)}</b></div>
         <div><span>Shipping</span><b>${money(o.shipping)}</b></div>${o.codFee ? `<div><span>COD fee</span><b>${money(o.codFee)}</b></div>` : ''}<div class="t"><span>Total</span><b>${money(o.total)}</b></div></div>
       <p class="hint">Thank you for shopping with ${esc(s.name)}. This is a computer-generated invoice.</p></div></div>`;
 }
 
+// ------------------------------------------------------------- enquiries ----
+function enquiries(id) {
+  if (id) {
+    const e = db.enquiries.find(x => x.id === id);
+    if (!e) return go('#/enquiries');
+    const row = (k, v) => v ? `<tr><th>${k}</th><td>${esc(v)}</td></tr>` : '';
+    shell('enquiries', `${esc(e.type)} — ${esc(e.name)}`, `<div class="cols wide">
+      <section class="card"><h2>Details</h2><table class="tbl kv">${row('Received', datetime(e.created))}${row('Name', e.name)}${row('Phone', e.phone)}${row('Email', e.email)}
+        ${row('Date of birth', e.dob)}${row('Time of birth', e.tob)}${row('Place of birth', e.pob)}${row('Preferred slot', e.slot)}${row('Details', e.note)}</table>
+        ${e.orderId ? `<p><a href="#/orders/${esc(e.orderId)}">Paid in order #${esc(e.orderId)} →</a></p>` : ''}
+        <div class="row-btns">${e.phone ? `<a class="btn sm" href="tel:${esc(e.phone.replace(/\s/g, ''))}">Call</a><a class="btn sm ghost" target="_blank" href="https://wa.me/${esc(e.phone.replace(/\D/g, ''))}">WhatsApp</a>` : ''}${e.email ? `<a class="btn sm ghost" href="mailto:${esc(e.email)}">Email</a>` : ''}</div></section>
+      <section class="card"><h2>Follow-up</h2><form id="ef"><label>Status<select name="status">${ENQ_STATUSES.map(s => `<option ${s === e.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
+        <label>Internal notes <small>only your team sees these</small><textarea name="staff" rows="5">${esc(e.staff || '')}</textarea></label><button class="btn">Save</button></form></section></div>`,
+      '<a href="#/enquiries" class="btn ghost sm">← Enquiries</a>');
+    $('#ef').onsubmit = ev => { ev.preventDefault(); e.status = ev.target.status.value; e.staff = ev.target.staff.value.trim(); save(); toast('Saved'); enquiries(id); };
+    return;
+  }
+  const q = new URLSearchParams(location.hash.split('?')[1] || '');
+  const ty = q.get('type') || '', st = q.get('status') || '';
+  const types = [...new Set(db.enquiries.map(e => e.type))];
+  let list = db.enquiries;
+  if (ty) list = list.filter(e => e.type === ty);
+  if (st) list = list.filter(e => e.status === st);
+  const link = ch => '#/enquiries?' + new URLSearchParams(Object.entries({ type: ty, status: st, ...ch }).filter(([, v]) => v));
+  shell('enquiries', 'Enquiries & bookings', `<p class="lead">Consultation bookings, kundali orders and leads from the free recommendation tools. Call them back and track each one to “Done”.</p>
+  <div class="bar"><div class="tabs"><a href="${link({ type: '' })}" class="${ty ? '' : 'on'}">All types</a>${types.map(t => `<a href="${link({ type: t })}" class="${ty === t ? 'on' : ''}">${esc(t)}</a>`).join('')}</div>
+    <div class="tabs">${['', ...ENQ_STATUSES].map(s => `<a href="${link({ status: s })}" class="${st === s ? 'on' : ''}">${s || 'Any status'}</a>`).join('')}</div></div>
+  <section class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Received</th><th>Type</th><th>Name</th><th>Phone</th><th>Details</th><th>Status</th></tr></thead><tbody>
+    ${list.map(e => `<tr class="click" data-href="#/enquiries/${e.id}"><td>${datetime(e.created)}</td><td>${esc(e.type)}</td><td><b>${esc(e.name)}</b>${e.dob ? `<small>DOB ${esc(e.dob)}</small>` : ''}</td><td>${esc(e.phone || '—')}</td><td class="clip">${esc(e.slot || e.note || '')}</td><td>${pill(e.status)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">Nothing here yet.</td></tr>'}
+  </tbody></table></div></section>`);
+  bindRows();
+}
+
 // -------------------------------------------------------------- products ----
+const typeLabel = p => p.type === 'gem' ? `${GEMS[p.gem]?.name || ''} · ${p.origin}` : p.type === 'rudraksha' ? `${MUKHI[p.mukhi] || ''} · ${p.origin}` : (MALAS[p.material]?.name || 'Mala');
 function products() {
   const q = new URLSearchParams(location.hash.split('?')[1] || '');
   const s = (q.get('q') || '').toLowerCase(), c = q.get('cat') || '';
-  let list = [...db.products].sort((a, b) => b.created - a.created);
+  let list = goods().sort((a, b) => b.created - a.created);
   if (c) list = list.filter(p => p.category === c);
-  if (s) list = list.filter(p => `${p.title} ${p.sku}`.toLowerCase().includes(s));
+  if (s) list = list.filter(p => `${p.title} ${p.sku} ${GEMS[p.gem]?.hindi || ''}`.toLowerCase().includes(s));
   shell('products', 'Products', `
-  <div class="bar"><form id="pf" class="search"><input name="q" placeholder="Search name or SKU…" value="${esc(q.get('q') || '')}">
+  <div class="bar"><form id="pf" class="search"><input name="q" placeholder="Search name, code, Hindi name…" value="${esc(q.get('q') || '')}">
     <select name="cat"><option value="">All categories</option>${db.categories.map(x => `<option value="${esc(x.slug)}" ${x.slug === c ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select><button class="btn sm ghost">Filter</button></form>
     <span class="muted">${list.length} products</span></div>
   <section class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Product</th><th>Category</th><th class="r">Price</th><th class="r">Stock</th><th>Status</th><th></th></tr></thead><tbody>
-    ${list.map(p => `<tr class="click" data-href="#/products/${p.id}"><td class="th">${productImage(p)}</td><td><b>${esc(p.title)}</b><small>${esc(p.sku)}${p.featured ? ' · Featured' : ''}${p.bestseller ? ' · Bestseller' : ''}</small></td>
-      <td>${esc(db.categories.find(x => x.slug === p.category)?.name || p.category)}</td><td class="r">${money(p.price)}</td>
+    ${list.map(p => `<tr class="click" data-href="#/products/${p.id}"><td class="th">${productImage(p)}</td><td><b>${esc(p.title)}</b><small>${esc(p.sku)} · ${esc(typeLabel(p))}${p.featured ? ' · Featured' : ''}</small></td>
+      <td>${esc(db.categories.find(x => x.slug === p.category)?.name || p.category)}</td><td class="r">${p.variants?.length ? '<small>from</small> ' : ''}${money(p.price)}</td>
       <td class="r ${p.stock <= 0 ? 'bad' : p.stock <= 2 ? 'warn' : ''}">${p.stock}</td><td>${pill(p.status === 'active' ? 'Active' : 'Draft')}</td><td class="r">›</td></tr>`).join('')}
   </tbody></table></div></section>`, `<a href="#/products/new" class="btn">+ Add product</a>`);
   bindRows();
@@ -183,67 +239,84 @@ function products() {
 
 function productForm(id) {
   const isNew = id === 'new';
-  const p = isNew ? { id: uid('P'), sku: 'SG-' + Math.floor(1e4 + Math.random() * 9e4), title: '', type: 'ring', category: 'rings', gem: 'ruby', metal: 'silver', gender: 'Women',
-    price: 0, compare: 0, stock: 1, carat: 3, sizes: ['6', '7', '8', '9', '10', '11', '12'], featured: false, bestseller: false, status: 'active', images: [], rating: 5, reviews: 0, desc: '', created: Date.now() }
+  const p = isNew ? { id: uid('P'), sku: 'YR-' + Math.floor(1e4 + Math.random() * 9e4), title: '', type: 'gem', category: 'precious', gem: 'ruby', origin: 'Burma', carat: 5,
+    shape: 'Oval', treatment: 'Unheated & untreated', lab: 'IGI', mukhi: '5', size: '20 mm', planet: '', deity: '', benefit: '', material: 'sphatik', beads: '108 + 1 (Sumeru)',
+    price: 0, compare: 0, variants: gemVariants(GEMS.ruby.ppc), stock: 1, featured: false, bestseller: false, status: 'active', images: [], rating: 5, reviews: 0, desc: '', created: Date.now() }
     : db.products.find(x => x.id === id);
-  if (!p) return go('#/products');
+  if (!p || p.type === 'service') return go('#/products');
   const draft = structuredClone(p);
+  draft.variants = draft.variants || [];
+  const vText = v => v.map(x => `${x.label} | ${x.price}`).join('\n');
   shell('products', isNew ? 'Add product' : 'Edit product', `
   <form id="prf" class="cols wide">
     <div>
-      <section class="card"><label>Product name<input name="title" required value="${esc(draft.title)}" placeholder="e.g. Classic Ruby Ring in 925 Silver"></label>
-        <label>Description<textarea name="desc" rows="5">${esc(draft.desc)}</textarea></label></section>
+      <section class="card"><div class="g2"><label>Product type<select name="type">${opts(PTYPES, draft.type)}</select></label>
+        <label>Category<select name="category">${db.categories.map(c => `<option value="${esc(c.slug)}" ${c.slug === draft.category ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label></div>
+        <label>Product name<input name="title" required value="${esc(draft.title)}" placeholder="e.g. Ceylon Yellow Sapphire (Pukhraj) – Premium"></label>
+        <label>Description<textarea name="desc" rows="4">${esc(draft.desc)}</textarea></label></section>
+      <section class="card t-gem"><h2>Gemstone details</h2><div class="g3">
+        <label>Gemstone<select name="gem">${opts(GEMS, draft.gem)}</select></label><label>Origin<select name="origin_g">${ORIGINS.map(o => `<option ${o === draft.origin ? 'selected' : ''}>${o}</option>`).join('')}</select></label>
+        <label>Shape<input name="shape" value="${esc(draft.shape || '')}"></label><label>Treatment<input name="treatment" value="${esc(draft.treatment || '')}"></label>
+        <label>Certificate (lab)<input name="lab" value="${esc(draft.lab || '')}"></label><label>Weight in stock (carat)<input name="carat" type="number" step="0.01" value="${draft.carat || ''}"></label></div>
+        <label>Weight options &amp; prices <small>one per line: <code>label | price</code> — customers pick one on the product page</small><textarea name="variants" rows="6" class="mono">${esc(vText(draft.variants))}</textarea></label>
+        <div class="row-btns"><label class="inline">Price per carat (₹)<input name="ppc" type="number" min="0" value="${GEMS[draft.gem]?.ppc || ''}"></label><button type="button" class="btn sm ghost" id="fillV">Fill 3.25–7.25 ratti from this rate</button></div></section>
+      <section class="card t-rudraksha"><h2>Rudraksha details</h2><div class="g3">
+        <label>Mukhi<select name="mukhi">${opts(MUKHI, draft.mukhi)}</select></label><label>Origin<select name="origin_r">${['Nepal', 'Indonesia', 'India'].map(o => `<option ${o === draft.origin ? 'selected' : ''}>${o}</option>`).join('')}</select></label>
+        <label>Bead size<input name="size" value="${esc(draft.size || '')}"></label><label>Ruling planet<input name="planet" value="${esc(draft.planet || '')}"></label>
+        <label>Deity<input name="deity" value="${esc(draft.deity || '')}"></label><label>Main benefit<input name="benefit" value="${esc(draft.benefit || '')}"></label></div>
+        <button type="button" class="btn sm ghost" id="fillR">Fill planet, deity &amp; benefit for this mukhi</button></section>
+      <section class="card t-mala"><h2>Mala details</h2><div class="g2"><label>Material<select name="material">${opts(MALAS, draft.material)}</select></label><label>Beads<input name="beads" value="${esc(draft.beads || '')}"></label></div></section>
       <section class="card"><h2>Photos</h2><div class="imgs" id="imgs"></div>
         <label class="upload">+ Add photos<input type="file" id="imgIn" accept="image/*" multiple hidden></label>
-        <p class="hint">Without photos, the store shows a drawing of the piece in the chosen gemstone and metal. The first photo is the main one.</p></section>
-      <section class="card"><h2>Pricing &amp; stock</h2><div class="g3">
-        <label>Price (₹)<input name="price" type="number" min="0" required value="${draft.price}"></label>
+        <p class="hint">Without photos, the store shows a drawing of the stone or bead. The first photo is the main one.</p></section>
+      <section class="card"><h2>Price &amp; stock</h2><div class="g3">
+        <label>Price (₹) <small id="priceHint"></small><input name="price" type="number" min="0" required value="${draft.price}"></label>
         <label>Compare-at price (₹)<input name="compare" type="number" min="0" value="${draft.compare || ''}" placeholder="optional"></label>
-        <label>Stock<input name="stock" type="number" min="0" required value="${draft.stock}"></label>
-        <label>SKU<input name="sku" value="${esc(draft.sku)}"></label>
-        <label>Weight (carat)<input name="carat" type="number" step="0.01" min="0" value="${draft.carat}"></label>
-        <label>Ring sizes<input name="sizes" value="${esc((draft.sizes || []).join(', '))}" placeholder="e.g. 6, 7, 8"></label></div>
-        <p class="hint">Compare-at price shows as a crossed-out price with a "% off" badge. Leave ring sizes empty for non-ring items.</p></section>
+        <label>Stock<input name="stock" type="number" min="0" required value="${draft.stock}"></label><label>Product code (SKU)<input name="sku" value="${esc(draft.sku)}"></label></div></section>
     </div>
     <div>
       <section class="card"><h2>Preview</h2><div class="preview" id="prev"></div></section>
-      <section class="card"><h2>Organise</h2>
+      <section class="card"><h2>Visibility</h2>
         <label>Status<select name="status"><option value="active" ${draft.status === 'active' ? 'selected' : ''}>Active — visible in store</option><option value="draft" ${draft.status !== 'active' ? 'selected' : ''}>Draft — hidden</option></select></label>
-        <label>Category<select name="category">${db.categories.map(c => `<option value="${esc(c.slug)}" ${c.slug === draft.category ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
-        <label>Type (for the drawing)<select name="type">${opts(TYPES, draft.type)}</select></label>
-        <label>Gemstone<select name="gem">${opts(GEMS, draft.gem)}</select></label>
-        <label>Metal<select name="metal">${opts(METALS, draft.metal)}</select></label>
-        <label>For<select name="gender">${['Women', 'Men', 'Unisex'].map(g => `<option ${g === draft.gender ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
         <label class="check"><input type="checkbox" name="featured" ${draft.featured ? 'checked' : ''}> Featured on home page</label>
         <label class="check"><input type="checkbox" name="bestseller" ${draft.bestseller ? 'checked' : ''}> Bestseller badge</label></section>
       <div class="save-bar"><button class="btn">${isNew ? 'Add product' : 'Save changes'}</button>
         ${isNew ? '' : `<button type="button" class="btn ghost" id="dup">Duplicate</button><button type="button" class="btn danger" id="del">Delete</button>`}</div>
     </div></form>`, `<a href="#/products" class="btn ghost sm">← Products</a>${isNew ? '' : ` <a href="../#/p/${esc(p.slug)}" target="_blank" class="btn ghost sm">View in store ↗</a>`}`);
   const f = $('#prf');
+  const parseV = () => f.variants.value.split('\n').map(l => l.split('|')).filter(x => x.length === 2 && x[0].trim() && +x[1] > 0).map(([l, pr]) => ({ label: l.trim(), price: Math.round(+pr) }));
+  const showType = () => { for (const t of Object.keys(PTYPES)) $(`.t-${t}`).hidden = f.type.value !== t; };
   const read = () => {
-    const v = n => f[n].value;
-    Object.assign(draft, { title: v('title').trim(), desc: v('desc').trim(), price: +v('price') || 0, compare: +v('compare') || 0, stock: Math.max(0, +v('stock') || 0),
-      sku: v('sku').trim(), carat: +v('carat') || 0, sizes: v('sizes').split(',').map(x => x.trim()).filter(Boolean), status: v('status'), category: v('category'),
-      type: v('type'), gem: v('gem'), metal: v('metal'), gender: v('gender'), featured: f.featured.checked, bestseller: f.bestseller.checked });
+    const v = n => f[n].value, t = v('type');
+    Object.assign(draft, { type: t, category: v('category'), title: v('title').trim(), desc: v('desc').trim(), price: +v('price') || 0, compare: +v('compare') || 0,
+      stock: Math.max(0, +v('stock') || 0), sku: v('sku').trim(), status: v('status'), featured: f.featured.checked, bestseller: f.bestseller.checked });
+    if (t === 'gem') Object.assign(draft, { gem: v('gem'), origin: v('origin_g'), shape: v('shape'), treatment: v('treatment'), lab: v('lab'), carat: +v('carat') || 0, variants: parseV() });
+    if (t === 'rudraksha') Object.assign(draft, { mukhi: v('mukhi'), origin: v('origin_r'), size: v('size'), planet: v('planet'), deity: v('deity'), benefit: v('benefit'), variants: [] });
+    if (t === 'mala') Object.assign(draft, { material: v('material'), beads: v('beads'), variants: [] });
+    if (draft.variants.length) { draft.price = draft.variants[0].price; f.price.value = draft.price; }
+    f.price.readOnly = !!draft.variants.length;
+    $('#priceHint').textContent = draft.variants.length ? '(from the first weight option)' : '';
   };
   const drawImgs = () => {
     $('#imgs').innerHTML = draft.images.map((src, i) => `<div class="img"><img src="${src}" alt=""><button type="button" data-rm="${i}" aria-label="Remove">×</button>${i ? `<button type="button" data-first="${i}" class="first">Make main</button>` : '<span class="first">Main</span>'}</div>`).join('');
     $$('[data-rm]').forEach(b => b.onclick = () => { draft.images.splice(+b.dataset.rm, 1); drawImgs(); preview(); });
     $$('[data-first]').forEach(b => b.onclick = () => { const [x] = draft.images.splice(+b.dataset.first, 1); draft.images.unshift(x); drawImgs(); preview(); });
   };
-  const preview = () => { read(); $('#prev').innerHTML = `<div class="pv-img">${productImage(draft)}</div><b>${esc(draft.title || 'Product name')}</b><div>${money(draft.price)} ${draft.compare > draft.price ? `<s>${money(draft.compare)}</s>` : ''}</div>`; };
-  drawImgs(); preview();
+  const preview = () => { read(); $('#prev').innerHTML = `<div class="pv-img">${productImage(draft)}</div><b>${esc(draft.title || 'Product name')}</b><div>${draft.variants.length ? 'from ' : ''}${money(draft.price)} ${draft.compare > draft.price ? `<s>${money(draft.compare)}</s>` : ''}</div>`; };
+  showType(); drawImgs(); preview();
   f.addEventListener('input', preview);
+  f.type.onchange = () => { showType(); preview(); };
+  f.gem.onchange = () => { f.ppc.value = GEMS[f.gem.value]?.ppc || ''; preview(); };
+  $('#fillV').onclick = () => { const r = +f.ppc.value; if (!r) return toast('Enter a price per carat first'); f.variants.value = vText(gemVariants(r)); preview(); };
+  $('#fillR').onclick = () => { const r = RUDRAKSHA[f.mukhi.value]; if (r) { f.planet.value = r[0]; f.deity.value = r[1]; f.benefit.value = r[2]; } preview(); };
   $('#imgIn').onchange = async e => {
-    for (const file of e.target.files) {
-      try { draft.images.push(await readImage(file)); } catch (err) { toast(err.message); }
-    }
+    for (const file of e.target.files) { try { draft.images.push(await readImage(file)); } catch (err) { toast(err.message); } }
     e.target.value = ''; drawImgs(); preview();
   };
   f.onsubmit = e => {
     e.preventDefault(); read();
     if (!draft.title) return toast('Please enter a product name');
-    if (draft.price <= 0) return toast('Please enter a price');
+    if (draft.price <= 0) return toast('Please enter a price (or weight options for a gemstone)');
     if (isNew || draft.title !== p.title) draft.slug = slugify(draft.title) + '-' + draft.id.slice(-4).toLowerCase();
     if (isNew) db.products.unshift(draft); else Object.assign(p, draft);
     if (save()) { toast(isNew ? 'Product added' : 'Saved'); go('#/products/' + draft.id); }
@@ -255,27 +328,31 @@ function productForm(id) {
 }
 
 // ------------------------------------------------------------ categories ----
+const catPic = c => c.image ? `<img src="${c.image}" alt="">` : art(c.type, c.key);
 function categories() {
   shell('categories', 'Categories', `
-  <div class="cols wide"><section class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Category</th><th class="r">Products</th><th>Home page</th><th></th></tr></thead><tbody>
-    ${db.categories.map((c, i) => `<tr><td class="th">${c.image ? `<img src="${c.image}" alt="">` : art(c.type, c.gem, c.metal)}</td><td><b>${esc(c.name)}</b><small>${esc(c.blurb || '')}</small></td>
+  <div class="cols wide"><section class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Category</th><th>Menu</th><th class="r">Products</th><th>Home</th><th></th></tr></thead><tbody>
+    ${db.categories.map((c, i) => `<tr><td class="th">${catPic(c)}</td><td><b>${esc(c.name)}</b><small>${esc(c.blurb || '')}</small></td>
+      <td>${esc({ gemstones: 'Gemstones', rudraksha: 'Rudraksha' }[c.group] || 'Own tab')}</td>
       <td class="r">${db.products.filter(p => p.category === c.slug).length}</td><td>${c.home ? 'Shown' : '—'}</td>
       <td class="r nowrap"><button class="link" data-up="${i}" ${i ? '' : 'disabled'}>↑</button> <button class="link" data-edit="${i}">Edit</button> <button class="link bad" data-del="${i}">Delete</button></td></tr>`).join('')}
-  </tbody></table></div><p class="hint">Use ↑ to change the order shown in the menu and on the home page.</p></section>
+  </tbody></table></div><p class="hint">Use ↑ to change the order. “Menu” decides which drop-down the category appears under.</p></section>
   <section class="card" id="catBox"></section></div>`);
   const form = (i = -1) => {
-    const c = i >= 0 ? db.categories[i] : { name: '', slug: '', blurb: '', type: 'ring', gem: 'ruby', metal: 'silver', home: true, image: '' };
+    const c = i >= 0 ? db.categories[i] : { name: '', slug: '', blurb: '', group: 'gemstones', type: 'gem', key: 'ruby', home: true, image: '' };
     $('#catBox').innerHTML = `<h2>${i >= 0 ? 'Edit category' : 'Add a category'}</h2><form id="cf">
-      <label>Name<input name="name" required value="${esc(c.name)}" placeholder="e.g. Bracelets"></label>
+      <label>Name<input name="name" required value="${esc(c.name)}" placeholder="e.g. Navratna Sets"></label>
       <label>Short description<input name="blurb" value="${esc(c.blurb || '')}"></label>
-      <div class="g3"><label>Picture: type<select name="type">${opts(TYPES, c.type)}</select></label><label>Gemstone<select name="gem">${opts(GEMS, c.gem)}</select></label><label>Metal<select name="metal">${opts(METALS, c.metal)}</select></label></div>
+      <label>Show in menu under<select name="group">${opts({ gemstones: 'Gemstones', rudraksha: 'Rudraksha', own: 'Its own tab in the menu' }, c.group || 'own')}</select></label>
+      ${picPicker(c.type, c.key)}
       <label class="upload">${c.image ? 'Replace photo' : 'Or upload a photo'}<input type="file" name="img" accept="image/*" hidden></label>${c.image ? '<label class="check"><input type="checkbox" name="noimg"> Remove photo</label>' : ''}
       <label class="check"><input type="checkbox" name="home" ${c.home ? 'checked' : ''}> Show on the home page</label>
       <button class="btn">${i >= 0 ? 'Save' : 'Add category'}</button> ${i >= 0 ? '<button type="button" class="btn ghost" id="cNew">New category</button>' : ''}</form>`;
+    bindPicPicker($('#cf'));
     $('#cf').onsubmit = async e => {
       e.preventDefault();
       const f = e.target, name = f.name.value.trim();
-      const data = { name, blurb: f.blurb.value.trim(), type: f.type.value, gem: f.gem.value, metal: f.metal.value, home: f.home.checked };
+      const data = { name, blurb: f.blurb.value.trim(), group: f.group.value, type: f.ptype.value, key: f.pkey.value, home: f.home.checked };
       if (f.img.files[0]) { try { data.image = await readImage(f.img.files[0], 600); } catch (err) { return toast(err.message); } }
       if (f.noimg?.checked) data.image = '';
       if (i >= 0) Object.assign(db.categories[i], data);
@@ -304,7 +381,9 @@ function customers(id) {
     const c = db.customers.find(x => x.id === id);
     if (!c) return go('#/customers');
     const os = db.orders.filter(o => o.customerId === c.id);
-    shell('customers', esc(c.name), `<div class="cols wide"><section class="card"><h2>Orders (${os.length})</h2>${orderTable(os)}</section>
+    const eq = db.enquiries.filter(e => e.email && e.email === c.email);
+    shell('customers', esc(c.name), `<div class="cols wide"><section class="card"><h2>Orders (${os.length})</h2>${orderTable(os)}
+        ${eq.length ? `<h2 style="margin-top:16px">Enquiries</h2>${eq.map(e => `<a class="stat-row" href="#/enquiries/${e.id}"><span>${esc(e.type)} · ${datetime(e.created)}</span>${pill(e.status)}</a>`).join('')}` : ''}</section>
       <section class="card"><h2>Details</h2><p><b>${esc(c.name)}</b><br>${esc(c.email)}<br>${esc(c.phone || '')}</p><p class="muted">${esc(c.address?.line || '')}<br>${esc(c.address?.city || '')} ${esc(c.address?.state || '')} ${esc(c.address?.pin || '')}</p>
         <p class="muted">Customer since ${date(c.created)}<br>Total spent ${money(os.filter(o => o.status !== 'Cancelled').reduce((s, o) => s + o.total, 0))}</p></section></div>`,
       '<a href="#/customers" class="btn ghost sm">← Customers</a>');
@@ -356,23 +435,26 @@ function coupons() {
 // --------------------------------------------------------------- banners ----
 function banners() {
   shell('banners', 'Homepage banners', `<p class="lead">The slides at the top of the home page. They rotate every few seconds.</p>
-  <div class="cols wide"><section class="card">${db.banners.map((b, i) => `<div class="bn t-${esc(b.theme)}"><div class="bn-art">${b.image ? `<img src="${b.image}" alt="">` : art(b.type, b.gem, 'vermeil')}</div>
+  <div class="cols wide"><section class="card">${db.banners.map((b, i) => `<div class="bn t-${esc(b.theme)}"><div class="bn-art">${b.image ? `<img src="${b.image}" alt="">` : art(b.type, b.key)}</div>
     <div><b>${esc(b.title)}</b><small>${esc(b.sub)}</small><small>Button: ${esc(b.btn)} → ${esc(b.link)}</small></div>
-    <div class="nowrap"><button class="link" data-up="${i}" ${i ? '' : 'disabled'}>↑</button> <button class="link" data-ed="${i}">Edit</button> <button class="link bad" data-dl="${i}">Delete</button></div></div>`).join('') || '<p class="muted">No banners — the home page will start with the categories.</p>'}</section>
+    <div class="nowrap"><button class="link" data-up="${i}" ${i ? '' : 'disabled'}>↑</button> <button class="link" data-ed="${i}">Edit</button> <button class="link bad" data-dl="${i}">Delete</button></div></div>`).join('') || '<p class="muted">No banners — the home page will start with the gemstones.</p>'}</section>
   <section class="card" id="bBox"></section></div>`);
+  const links = [['#/shop', 'All products'], ...db.categories.map(c => [`#/shop?cat=${c.slug}`, c.name]), ['#/gemstones', 'Gemstones page'], ['#/zodiac', 'Zodiac page'],
+    ['#/tools/gem-recommendation', 'Free gem recommendation'], ['#/tools/consultation', 'Book consultation'], ['#/tools/kundali', 'Order kundali'], ['#/guide', 'Gem Guide']];
   const form = (i = -1) => {
-    const b = i >= 0 ? db.banners[i] : { title: '', sub: '', btn: 'Shop now', link: '#/shop', theme: 'navy', type: 'ring', gem: 'ruby', image: '' };
+    const b = i >= 0 ? db.banners[i] : { title: '', sub: '', btn: 'Shop now', link: '#/shop', theme: 'teal', type: 'gem', key: 'ruby', image: '' };
     $('#bBox').innerHTML = `<h2>${i >= 0 ? 'Edit slide' : 'Add a slide'}</h2><form id="bf"><label>Heading<input name="title" required value="${esc(b.title)}"></label>
       <label>Text<textarea name="sub" rows="2">${esc(b.sub)}</textarea></label>
-      <div class="g3"><label>Button text<input name="btn" value="${esc(b.btn)}"></label><label>Button goes to<select name="link">${[['#/shop', 'All jewellery'], ...db.categories.map(c => [`#/shop?cat=${c.slug}`, c.name]), ['#/zodiac', 'Zodiac page'], ['#/gemstones', 'Gemstones page'], ['#/guide', 'Gem Guide']].map(([v, l]) => `<option value="${esc(v)}" ${v === b.link ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+      <div class="g3"><label>Button text<input name="btn" value="${esc(b.btn)}"></label><label>Button goes to<select name="link">${links.map(([v, l]) => `<option value="${esc(v)}" ${v === b.link ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
       <label>Colour<select name="theme">${opts(THEMES, b.theme)}</select></label></div>
-      <div class="g3"><label>Picture: type<select name="type">${opts(TYPES, b.type)}</select></label><label>Gemstone<select name="gem">${opts(GEMS, b.gem)}</select></label>
-      <label class="upload">${b.image ? 'Replace photo' : 'Or upload a photo'}<input type="file" name="img" accept="image/*" hidden></label></div>
+      ${picPicker(b.type, b.key)}
+      <label class="upload">${b.image ? 'Replace photo' : 'Or upload a photo'}<input type="file" name="img" accept="image/*" hidden></label>
       ${b.image ? '<label class="check"><input type="checkbox" name="noimg"> Remove photo</label>' : ''}
       <button class="btn">${i >= 0 ? 'Save' : 'Add slide'}</button></form>`;
+    bindPicPicker($('#bf'));
     $('#bf').onsubmit = async e => {
       e.preventDefault();
-      const f = e.target, data = { title: f.title.value.trim(), sub: f.sub.value.trim(), btn: f.btn.value.trim(), link: f.link.value, theme: f.theme.value, type: f.type.value, gem: f.gem.value };
+      const f = e.target, data = { title: f.title.value.trim(), sub: f.sub.value.trim(), btn: f.btn.value.trim(), link: f.link.value, theme: f.theme.value, type: f.ptype.value, key: f.pkey.value };
       if (f.img.files[0]) { try { data.image = await readImage(f.img.files[0], 800); } catch (err) { return toast(err.message); } }
       if (f.noimg?.checked) data.image = '';
       if (i >= 0) Object.assign(db.banners[i], data); else db.banners.push({ id: uid('B'), image: '', ...data });
@@ -401,18 +483,19 @@ function reviews() {
 function blog(slug) {
   if (slug) {
     const isNew = slug === 'new';
-    const p = isNew ? { slug: '', title: '', date: new Date().toISOString().slice(0, 10), gem: 'ruby', excerpt: '', body: '', image: '' } : db.posts.find(x => x.slug === slug);
+    const p = isNew ? { slug: '', title: '', date: new Date().toISOString().slice(0, 10), type: 'gem', key: 'ruby', excerpt: '', body: '', image: '' } : db.posts.find(x => x.slug === slug);
     if (!p) return go('#/blog');
     shell('blog', isNew ? 'New article' : 'Edit article', `<form id="bgf" class="card narrow"><label>Title<input name="title" required value="${esc(p.title)}"></label>
-      <div class="g3"><label>Date<input name="date" type="date" value="${esc(p.date)}"></label><label>Gemstone (for picture &amp; shop link)<select name="gem">${opts(GEMS, p.gem)}</select></label>
-      <label class="upload">${p.image ? 'Replace photo' : 'Upload a photo'}<input type="file" name="img" accept="image/*" hidden></label></div>
+      <div class="g2"><label>Date<input name="date" type="date" value="${esc(p.date)}"></label><label class="upload">${p.image ? 'Replace photo' : 'Upload a photo'}<input type="file" name="img" accept="image/*" hidden></label></div>
+      ${picPicker(p.type || 'gem', p.key || 'ruby')}
       <label>Summary<textarea name="excerpt" rows="2">${esc(p.excerpt)}</textarea></label>
       <label>Article <small>Blank line = new paragraph. Start a line with ## for a heading.</small><textarea name="body" rows="14">${esc(p.body)}</textarea></label>
       <button class="btn">${isNew ? 'Publish' : 'Save'}</button> ${isNew ? '' : `<button type="button" class="btn danger" id="pdel">Delete</button>`}</form>`,
       `<a href="#/blog" class="btn ghost sm">← Articles</a>`);
+    bindPicPicker($('#bgf'));
     $('#bgf').onsubmit = async e => {
       e.preventDefault();
-      const f = e.target, data = { title: f.title.value.trim(), date: f.date.value, gem: f.gem.value, excerpt: f.excerpt.value.trim(), body: f.body.value.trim() };
+      const f = e.target, data = { title: f.title.value.trim(), date: f.date.value, type: f.ptype.value, key: f.pkey.value, excerpt: f.excerpt.value.trim(), body: f.body.value.trim() };
       if (f.img.files[0]) { try { data.image = await readImage(f.img.files[0], 1000); } catch (err) { return toast(err.message); } }
       if (isNew) { data.slug = slugify(data.title); db.posts.unshift({ image: '', ...data }); } else Object.assign(p, data);
       save(); toast('Saved'); go('#/blog');
@@ -441,19 +524,22 @@ function settings() {
       <label>Announcement bar <small>the thin bar at the very top of every page — leave empty to hide</small><input name="announcement" value="${esc(s.announcement)}"></label>
       <div class="g2"><label>Phone / WhatsApp<input name="phone" value="${esc(s.phone)}"></label><label>Email<input name="email" value="${esc(s.email)}"></label></div>
       <label>Address<input name="address" value="${esc(s.address)}"></label></section>
-    <section class="card"><h2>Tax</h2><div class="g2"><label>GSTIN<input name="gstin" value="${esc(s.gstin)}"></label><label>GST rate (%) <small>jewellery is usually 3%</small><input name="gst" type="number" step="0.5" min="0" value="${s.gst}"></label></div>
+    <section class="card"><h2>Astrology services</h2><div class="g2"><label>Consultation fee (₹)<input name="consultFee" type="number" min="0" value="${s.consultFee}"></label>
+      <label>Handmade kundali fee (₹)<input name="kundaliFee" type="number" min="0" value="${s.kundaliFee}"></label></div></section>
+    <section class="card"><h2>Tax</h2><div class="g2"><label>GSTIN<input name="gstin" value="${esc(s.gstin)}"></label><label>GST rate (%) <small>gemstones are usually 3%</small><input name="gst" type="number" step="0.5" min="0" value="${s.gst}"></label></div>
       <p class="hint">Prices in the store include GST; invoices split it into CGST + SGST.</p></section></div>
     <div><section class="card"><h2>Shipping &amp; payment</h2><div class="g2"><label>Shipping charge (₹)<input name="shipping" type="number" min="0" value="${s.shipping}"></label>
       <label>Free shipping over (₹)<input name="freeShippingOver" type="number" min="0" value="${s.freeShippingOver}"></label></div>
       <label class="check"><input type="checkbox" name="cod" ${s.cod ? 'checked' : ''}> Offer cash on delivery</label><label>COD fee (₹)<input name="codFee" type="number" min="0" value="${s.codFee}"></label></section>
       <div class="save-bar"><button class="btn">Save settings</button></div>
-      <section class="card danger-zone"><h2>Demo data</h2><p class="hint">Put the demo back to how it started (all your test products, orders and changes are removed from this browser).</p><button type="button" class="btn danger" id="rst">Reset demo data</button></section></div></form>`);
+      <section class="card danger-zone"><h2>Demo data</h2><p class="hint">Put the demo back to how it started (all test products, orders and changes are removed from this browser).</p><button type="button" class="btn danger" id="rst">Reset demo data</button></section></div></form>`);
   $('#stf').onsubmit = e => {
     e.preventDefault();
     const f = e.target;
     Object.assign(s, { name: f.name.value.trim(), tagline: f.tagline.value.trim(), announcement: f.announcement.value.trim(), phone: f.phone.value.trim(), email: f.email.value.trim(),
       address: f.address.value.trim(), gstin: f.gstin.value.trim(), gst: +f.gst.value || 0, shipping: +f.shipping.value || 0, freeShippingOver: +f.freeShippingOver.value || 0,
-      cod: f.cod.checked, codFee: +f.codFee.value || 0 });
+      cod: f.cod.checked, codFee: +f.codFee.value || 0, consultFee: +f.consultFee.value || 0, kundaliFee: +f.kundaliFee.value || 0 });
+    for (const [pid, fee] of [['SV-CONSULT', s.consultFee], ['SV-KUNDALI', s.kundaliFee]]) { const p = db.products.find(x => x.id === pid); if (p) p.price = fee; }
     save(); toast('Settings saved'); settings();
   };
   $('#rst').onclick = () => { if (confirm('Reset all demo data in this browser?')) { reset(); toast('Demo data reset'); settings(); } };
@@ -467,6 +553,7 @@ function route() {
   window.scrollTo(0, 0);
   if (!a || a === 'dash') dash();
   else if (a === 'orders') b ? (c === 'invoice' ? invoice(b) : order(b)) : orders();
+  else if (a === 'enquiries') enquiries(b);
   else if (a === 'products') b ? productForm(b) : products();
   else if (a === 'categories') categories();
   else if (a === 'customers') customers(b);
@@ -479,10 +566,9 @@ function route() {
   else dash();
 }
 window.addEventListener('hashchange', route);
-// Live refresh when the shop (another tab) changes data — but never on a
-// page with a form, so nothing being typed is thrown away.
+// Live refresh when the shop (another tab) changes data — but never on a page with a form.
 onExternalChange(() => {
   const [a, b] = location.hash.replace(/^#\/?/, '').split('?')[0].split('/');
-  if (!b && ['', 'dash', 'orders', 'reviews', 'inbox', 'customers', 'products'].includes(a || '')) route();
+  if (!b && ['', 'dash', 'orders', 'reviews', 'inbox', 'customers', 'products', 'enquiries'].includes(a || '')) route();
 });
 route();

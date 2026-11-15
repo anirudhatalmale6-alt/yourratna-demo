@@ -1,10 +1,10 @@
-# Sitara Gems — jewellery store demo
+# YourRatna — gemstone, rudraksha & astro-tools store (demo)
 
-A clickable demo of a gemstone & jewellery store with a full admin panel.
+A clickable demo store with a full admin panel.
 
-- **Store:** home, category pages with filters, product pages, cart, checkout, order tracking, customer accounts, wishlist, gemstone & zodiac pages, gem guide (blog), FAQ, contact and policy pages.
-- **Admin (`/admin/`):** dashboard, orders (status, tracking, GST invoice), products (photos, stock, variants), categories, customers (CSV export), coupons, homepage banners, review moderation, blog, messages, store settings.
+- **Store:** Gemstones (precious & semi-precious, with weight options in ratti/carat), Rudraksha (1–14 Mukhi, Ganesha, Gauri Shankar), Japa & Rudraksha Malas, shop by zodiac, Astro Tools (free gemstone recommendation, rudraksha recommendation, consultation booking, carat↔ratti converter, handmade kundali), Gem Guide blog, cart, coupons, checkout, order tracking, customer accounts.
+- **Admin (`/admin/`):** dashboard, orders (status, tracking, GST invoice), enquiries & bookings, products (gemstone / rudraksha / mala fields, weight options, photos), categories, customers (CSV), coupons, homepage banners, reviews, blog, messages, store settings.
 
 Demo admin login: `admin` / `admin123`.
 
-Everything is stored in the visitor's own browser (localStorage) so the demo needs no server; changes made in the admin appear in the store immediately. Product artwork is drawn in code (`js/art.js`) — uploaded photos replace it. In the production build the same pages talk to a real backend (database, payments, emails).
+Everything is stored in the visitor's own browser (localStorage), so the demo needs no server; admin changes appear in the store immediately. Product pictures are drawn in code (`js/art.js`) and are replaced by uploaded photos.
